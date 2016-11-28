@@ -1,0 +1,198 @@
+---
+title: "Tarea modulo 3"
+output: html_document
+---
+
+Lo primero es identificar y seleccionar el entorno donde trabajamos.
+
+```{r getwed, warning=FALSE, error=FALSE}
+
+getwd()
+setwd("/Users/eduardoinigo/Documents/Master Big data/ejerciciosR/students")
+
+```
+
+Cargamos las librerias necesarias para el proceso.
+
+
+```{r librerias,  warning=FALSE, error=FALSE, results='hide'}
+
+library("ggplot2")
+library("corrplot")
+library("dplyr")
+library("plotrix")
+library("knitr")
+library("mlbench")
+library("caret")
+library("ROCR")
+library("e1071")
+
+```
+
+#Exploratorio
+
+Carga de datos.
+
+```{r read.table}
+
+stmat<-read.table("./student/student-mat.csv",row.names=NULL,sep=";",header=TRUE)
+head(stmat)
+str(stmat)
+
+```
+
+Empezamos con la limpieza de los datos.
+
+```{r cleaning, warning=FALSE, error=FALSE} 
+
+names(stmat)<-tolower(names(stmat))
+
+stmat$mjob<-gsub("_"," ",stmat$mjob)
+
+```
+
+A priorio no parece que tengamos más datos que limpiar ya que están bien definidos, sin embargo antes de realizar un análisis explotarioro conviene ver si tenemos las variables más evidentes relacionadas con las notas como por ejemplo el tiempo libre, las ausencias, etc.
+
+```{r plot1-2, echo=FALSE, warning=FALSE}
+
+ggplot(stmat, aes(x=studytime,y=g3)) + geom_jitter(height=2,width=2) +ggtitle ("Fig 1 Tiempo de estudio y notas") 
+
+ggplot(stmat, aes(x=famrel,y=g3))+geom_smooth(method=lm)+ggtitle("Fig 2 Relación con la familia y notas")
+
+```
+
+
+Parece ser que el tiempo de estudio no tiene mucho que ver con las notas finales, por el contrario la relación con la familia influye directamente en las notas, vamos a ver si pasa lo mismo con los padres divorciados o no.
+
+```{r plot3-4, warning=FALSE, error=FALSE}
+
+ggplot(stmat,aes(x=pstatus,y=g3))+geom_boxplot()+ggtitle("Fig 3 Padres separados y notas")
+
+ggplot(stmat,aes(x=famsup,y=g3))+geom_boxplot()+ggtitle("Fig 4 Apoyo parental y notas")
+
+```
+
+
+Como se observa no parece que haya relación directa entre el estado civil de los padres, el apoyo que les dan y las notas, vamos a proceder a realizar una matriz de correlación entre variables para determinar cuales de las variables tienen mayor relación entre sí.
+
+Transformamos algunas variables para poder introducirlas en la matriz.
+
+```{r matriz correl, warning=FALSE, error=FALSE}
+
+stmat$address<-ifelse(stmat$address =="U",1,0)
+stmat$famsize<-ifelse(stmat$famsize=="GT3",1,0)
+stmat$pstatus<-ifelse(stmat$pstatus=="T",1,0)
+stmat$schoolsup<-ifelse(stmat$schoolsup=="yes",1,0)
+stmat$famsup<-ifelse(stmat$famsup=="yes",1,0)
+stmat$paid<-ifelse(stmat$paid=="yes",1,0)
+stmat$activities<-ifelse(stmat$activities=="yes",1,0)
+stmat$higher<-ifelse(stmat$higher=="yes",1,0)
+stmat$internet<-ifelse(stmat$internet=="yes",1,0)
+stmat$romantic<-ifelse(stmat$romantic=="yes",1,0)
+stmat$nursery<-ifelse(stmat$nursery=="yes",1,0)
+stmat$school<-ifelse(stmat$school=="GP",1,0)
+stmat$sex<-ifelse(stmat$sex=="M",1,0)
+
+stcor<-cor(stmat[,c("address","famsize","pstatus","medu","fedu","traveltime","studytime","failures","schoolsup","famsup","paid","activities","higher","internet","romantic","famrel","freetime","goout","absences","g1","g2","g3")])
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(stcor, method = "shade", shade.col = NA, tl.col = "black",tl.srt = 45, col = col(200), addCoef.col="black",order="AOE",mar = c(1,0,2,0), line=-2,main = "Fig 5 Matriz de correlación")
+
+```
+
+#Modelo de aprendizaje no supervisado.
+
+Para el modelo de aprendizaje no supervisado optamos por los clustering y ver como agrupa las variables. Los otros modelos de aprendizaje no supervisado no parecen ser adecuados para el problema en cuestión.
+
+```{r no super, warning=FALSE, error=FALSE}
+
+mydata <- select(stmat,-mjob,-fjob,-reason,-guardian)
+wss <- (nrow(mydata)-1)*sum(apply(mydata,2,var))
+  for (i in 2:15) wss[i] <- sum(kmeans(mydata,
+                                       centers=i)$withinss)
+plot(1:15, wss, type="b", xlab="Numero de Clusters",
+     ylab="Sumas de cuadrados dentro de los grupos",
+     main="Num de clusters óptimo según Elbow",
+     pch=20, cex=2)
+
+```
+
+Parece que el número optimo de clusters es 5.
+
+```{r clusters,warning=FALSE, error=FALSE}
+
+set.seed(1234)
+kmeans.clust<-kmeans(mydata,5)
+kmeans.clust
+
+table(stmat$g3,kmeans.clust$cluster)
+
+stmat$clusterid<-kmeans.clust$cluster
+mydata$clusterid<-kmeans.clust$cluster
+
+```
+Se puede observar que en los clusters se agrupan rango de notas, en el 2 los de notas altas, en el 3 de aprobados justos y en el 4 los suspensos con nota muy baja.
+
+#Modelo de aprendizaje supervisado con caret.
+
+Modelo de aprendizaje supervisado con caret. Utilizamos los datos de mydata ya que estos no contienen los valores de las profesiones de los padres ni tampoco la supervisión, los cuales se pueden eliminar.
+
+```{r supervisado, warning=FALSE, error=FALSE}
+
+set.seed(1111)
+index.mydata <- createDataPartition(mydata$g3, p=0.7, list=F)
+
+train.mydata <- mydata[index.mydata,]
+test.mydata <- mydata[ -index.mydata, ]
+
+#fitControl <- trainControl(method = "none")
+fitControl <- trainControl(method="cv", repeats=10)
+
+lm.model.caret <- train(g3 ~. ,data = train.mydata ,method = "lm", trControl = fitControl)
+print(lm.model.caret)
+
+summary(lm.model.caret$finalModel)
+
+```
+
+Prediccion y evaluación del modelo
+
+```{r evaluaci mo, warning=FALSE, error=FALSE}
+
+lm.model.caret.predict <- predict(lm.model.caret$finalModel, newdata = test.mydata)
+print(head(lm.model.caret.predict))
+
+test.values.lm <-data.frame(obs=test.mydata$g3,pred=lm.model.caret.predict)
+defaultSummary(test.values.lm)
+
+```
+
+
+Random forest para la regresión
+
+```{r forest, warning=FALSE, error=FALSE}
+
+tunegrid <- expand.grid(mtry=c(1))
+rf.reg.model <- train(g3 ~. ,data = train.mydata ,method = "rf", tuneGrid = tunegrid, trControl = fitControl)
+print(rf.reg.model)
+
+rf.reg.model.predict <- predict(rf.reg.model$finalModel, newdata = test.mydata)
+print(head(rf.reg.model.predict))
+
+test_values_rf<-data.frame(obs=test.mydata$g3,pred=rf.reg.model.predict)
+defaultSummary(test_values_rf)
+
+```
+
+Comparamos ambos modelos de prediccion, lm y randomForest
+
+```{r compara, warning=FALSE, error=FALSE}
+
+reg.models <- list( lm.model.caret, rf.reg.model )
+compar.reg.models <- resamples( reg.models )
+summary( compar.reg.models )
+
+```
+
+El modelo con regresión lineal parece más preciso.
+
